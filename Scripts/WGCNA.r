@@ -10,7 +10,7 @@ source('Scripts/Rfunctions.r')
 
 #setwd('/Volumes/nordborg/user/pieter.clauw/Documents/Experiments/UltimateQandD/')
 # DATA 
-samples<- read.table('Data/samples.txt', header = T, comment.char = '', sep = '\t')
+samples<- read.table('/Volumes/nordborg/pub/forPieter/WGCNA/samples.txt', header = T, comment.char = '', sep = '\t')
 Araport11 <- read.table('/Volumes/nordborg/pub/forPieter/WGCNA/Araport11_GFF3_genes_transposons.201606.ChrM_ChrC_FullName.gtf')
 # FUNCTION
 
