@@ -1,6 +1,6 @@
 #overview on 6 vs 16 degrees overlap
 #use data created in WGCNA script (environment saved)
-
+library(WGCNA)
 
 #data prepearing
 networks<- list(expr16C.net, expr6C.net)
@@ -60,14 +60,21 @@ labeledHeatmap(Matrix = pTable,
 dev.off()
 
 #creating table with only overlaps
-ClearTable<- data.frame('NameModule16'= character(), 'NameModule6'=character(), 'N_genes16'=integer(), 'N_genes6'=integer(), 'N_overlapped_genes'=integer(), 'p-value'=integer())
+ClearTable<- data.frame('NameModule16'= character(), 'NameModule6'=character(), 'N_totgenes16'=integer(), 'N_totgenes6'=integer(), 'N_genestotoverlapped16'= integer(), 'N_genestotoverlapped6'= integer(), 'N_overlapped_genes'=integer(), 'p-value'=integer())
 for (mod16 in 1:nModules[[1]]) {
   for (mod6 in 1:nModules[[2]]) {
     Members16 = (moduleColors[[1]] == Modules[[1]][mod16])
     Members6 = (moduleColors[[2]] == Modules[[2]][mod6])
-    #pTable[mod16, mod6] = -log10(fisher.test(Members16, Members6, alternative = "greater")$p.value);
+    pTable[mod16, mod6] = -log10(fisher.test(Members16, Members6, alternative = "greater")$p.value);
     if ((sum(moduleColors[[1]] == Modules[[1]][mod16] & moduleColors[[2]] == Modules[[2]][mod6])) >0) {
-    lineiwant<-data.frame('NameModule16'= Modules[[1]][mod16], 'NameModule6'= Modules[[2]][mod6], 'N_genes16'= ModTotal[[1]][mod16], 'N_genes6'= ModTotal[[2]][mod6], 'N_overlapped_genes'=sum(moduleColors[[1]] == Modules[[1]][mod16] & moduleColors[[2]] == Modules[[2]][mod6]), 'p-value'=pTable[mod16,mod6])
+    lineiwant<-data.frame('NameModule16'= Modules[[1]][mod16], 
+                          'NameModule6'= Modules[[2]][mod6], 
+                          'N_totgenes16'= length(colnames(expr16C)[moduleColors[[2]]== Modules[[1]][mod16]]), 
+                          'N_totgenes6'= length(colnames(expr6C)[moduleColors[[2]]== Modules[[2]][mod6]]) , 
+                          'N_genestotoverlapped16'= ModTotal[[1]][mod16], 
+                          'N_genestotoverlapped6'= ModTotal[[2]][mod6], 
+                          'N_overlapped_genes'=sum(moduleColors[[1]] == Modules[[1]][mod16] & moduleColors[[2]] == Modules[[2]][mod6]), 
+                          'p-value'=pTable[mod16,mod6])
     ClearTable<- rbind(ClearTable, lineiwant) 
       }
   }
@@ -80,16 +87,15 @@ transhold<- -log10(0.05/6308)
 #clean more the table based on transhold
 ClearTable2<- ClearTable[ClearTable$p.value > transhold,]
 
-write.table(ClearTable2, file = '/Volumes/nordborg/pub/forPieter/WGCNA/Results/Table overlaps modules 6 vs 16.txt', quote = FALSE, sep = ' ', row.names = FALSE, col.names = TRUE)
+#write.table(ClearTable2, file = '/Volumes/nordborg/pub/forPieter/WGCNA/Results/Table overlaps modules 6 vs 16.txt', quote = FALSE, sep = ' ', row.names = FALSE, col.names = TRUE)
 
 #create histograms 
-hist(ClearTable$N_overlapped_genes/ClearTable$N_genes16, breaks = 100, col = 'grey')
-hist(ClearTable$N_overlapped_genes/ClearTable$N_genes6, breaks = 100, col = 'grey')
+#how many genes are overlapped on the total for that module
+hist(ClearTable2$N_overlapped_genes/ClearTable2$N_genes16, breaks = 100, col = 'grey')
+hist(ClearTable2$N_overlapped_genes/ClearTable2$N_genes6, breaks = 100, col = 'grey')
 
 ClearTable3<- ClearTable[ClearTable$p.value < transhold,]
 length(unique(ClearTable3$NameModule16))
+length(unique(ClearTable3$NameModule6))
 
-#hist((count(ClearTable$p.value < transhold))/nModules[[1]], breaks = 100, col='grey')
-library(ggplot2)
-qplot(ClearTable$N_overlapped_genes/ClearTable$N_genes16, geom = 'histogram')
-qplot(, Modules[[1]])
+
