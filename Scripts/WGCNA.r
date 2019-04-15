@@ -32,11 +32,18 @@ tx2gene <- data.frame('transcriptID' = Araport11[,10], 'geneID' = Araport11[,13]
 
 txi <- tximport(files, type = 'salmon', tx2gene = tx2gene, dropInfReps = T)
 dds.full <- DESeqDataSetFromTximport(txi, colData = samples, design = ~  replicate + accession + temperature + accession:temperature)
+dds <- estimateSizeFactors(dds.full)
+idx <- rowSums(counts(dds) >= 10 ) >= 19.80
+dds<- dds[idx,]
 
 # variance stabilisation transform of count data
-dds.varStab <- varianceStabilizingTransformation(dds.full, blind = F)
-counts.varStab <- t(assay(dds.varStab))
+dds.varStab <- varianceStabilizingTransformation(dds, blind = F)
 
+#remove batch effect
+library(limma)
+assay(dds.varStab) <- removeBatchEffect(assay(dds.varStab), dds.varStab$replicate)
+
+counts.varStab <- t(assay(dds.varStab))
 
 detach("package:DESeq2", unload = T)
 detach("package:tximport", unload = T)
@@ -44,6 +51,20 @@ library(WGCNA)
 # WGCNA
 expr6C <- counts.varStab[as.character(samples$sample[samples$temperature == '6C']), ]
 expr16C <- counts.varStab[as.character(samples$sample[samples$temperature == '16C']), ]
+
+#check quantile scatterplots to make sure there are no systematic shifts between samples
+multiExpr<-list('expr16C'=expr16C, 'expr6C'=expr6C)
+for (i in c(1, 2)) {
+  readmatrix<- multiExpr[[i]]
+  for (j in 1:nrow(readmatrix)) {
+    sampleiwant<- t(readmatrix[j,])
+    pdf(file = paste('/Volumes/nordborg/pub/forPieter/WGCNA/Results/Check normalization/', row.names(readmatrix)[j], '.pdf', sep = ''), wi = 14, he = 8)
+    qqnorm(sampleiwant, pch = 1, frame = FALSE, main = paste(names(multiExpr[i]), 'sample', row.names(readmatrix)[j], sep = ' '))
+    qqline(sampleiwant, col = "red", lwd = 2)
+    dev.off()
+  }
+}
+
 
 # filter genes with too many missing values and zero variance
 expr6C.filt <- geneFilter(expr6C)
