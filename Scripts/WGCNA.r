@@ -25,7 +25,6 @@ samples$replicate <- as.factor(samples$replicate)
 files <- file.path('/Volumes/nordborg/pub/forPieter/WGCNA/SalmonQuantification/', samples$basename, '' ,'_quasiMap_pseudoG/quant.sf', fsep = '')
 names(files) <- samples$sample
 
-Araport11 <- read.table('/Volumes/nordborg/user/pieter.clauw/Documents/Source/Araport11/Araport11_GFF3_genes_transposons.201606.ChrM_ChrC_FullName.gtf')
 colnames(Araport11) <- c('chr', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes')
 Araport11$attributes <- as.character(Araport11$attributes)
 
