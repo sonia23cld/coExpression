@@ -1,42 +1,45 @@
 # differential expresison analysis from quasiMapped (salmon) data based pseudoGenomes and Araport11 annotation
 
-setwd('/Volumes/nordborg/user/pieter.clauw/Documents/Experiments/UltimateQandD/')
+setwd('/users/sonia.celestini/New_data/')
 
 # LIBRARIES #
 library(tximport)
 library(DESeq2)
-library(vsn)
+#library(vsn)
 library(ggplot2)
-source('Scripts/Transcriptome/diffExpr_functions.r')
+source('/groups/nordborg/user/sonia.celestini/CoExpression New/Scripts/diffExpr_functions.r')
 
 # DATA #
 #salmon_qc
-salmon_qc <- read.csv('Results/Transcriptome/SalmonQuant/Araport11/salmon_quasiMap_pseudoG_summary.csv')
-salmon_qc <- salmon_qc[!salmon_qc$temperature %in% c('16C?', '6C?'), ]
+#salmon_qc <- read.csv('Results/SalmonQuant/salmon_quasiMap_pseudoG_summary.csv')
+#salmon_qc <- salmon_qc[!salmon_qc$temperature %in% c('16C?', '6C?'), ]
 
 #update samples accordingly, original file in projects folder
-samples <- read.table('Data/Transcriptome/samples.txt', header = T, sep = '\t', comment.char = "")
+samples <- read.table('samples_updated.txt', header = T, sep = ' ', comment.char = "")
 samples$basename <- as.character(samples$basename)
 samples$accession <- as.factor(samples$accession)
 samples$acnTemp <- paste(samples$accession, samples$temperature, sep = '_')
 row.names(samples) <- samples$sample
 
 # only samples with confirmed genotypes
-samples <- samples[samples$genoCheck == 'ok', ]
+samples <- samples[samples$Selected == 'yes', ]
 # remove samples 63076 and 63077 -> unlcear which is what temperature, likely to be swapped
-samples <- samples[!samples$sample %in% c(63076, 63077), ]
+#samples <- samples[!samples$sample %in% c(63076, 63077), ]
 samples$temperature <- factor(as.character(samples$temperature))
 table(samples[,c('accession', 'temperature', 'replicate')])
 
-files <- file.path('Results/Transcriptome/SalmonQuant/Araport11/', samples$basename, '' ,'_quasiMap_pseudoG/quant.sf', fsep = '')
+files <- file.path('Results/SalmonQuant/', samples$basename, '' ,'_quasiMap_pseudoG_Trimmed/quant.sf', fsep = '')
 names(files) <- samples$sample
 
 # file translating transcipts to genes
-Araport11 <- read.table('/Volumes/nordborg/user/pieter.clauw/Documents/Source/Araport11/Araport11_GFF3_genes_transposons.201606.ChrM_ChrC_FullName.gtf')
+Araport11 <- read.table('/scratch-cbe/users/sonia.celestini/Araport11_transcriptome/Araport11_GFF3_genes_transposons.201606.gff', sep ='\t') #Araport11_GFF3_genes_transposons.201606.ChrM_ChrC_FullName.gtf')
 colnames(Araport11) <- c('chr', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes')
 Araport11$attributes <- as.character(Araport11$attributes)
+Araport11 <- Araport11[Araport11$feature == 'mRNA',]
+library(stringr)
+Araport11[,9:10]<- str_split_fixed(Araport11$attributes, ';', 3)[,1:2]
 
-tx2gene <- data.frame('transcriptID' = Araport11[,10], 'geneID' = Araport11[,13])
+tx2gene <- data.frame('transcriptID' = sub(".*=", "", Araport11$attributes), 'geneID' = sub(".*=", "", Araport11$V10))
 
 # import salmon quantification data
 txi <- tximport(files, type = 'salmon', tx2gene = tx2gene, dropInfReps = T)
@@ -95,48 +98,48 @@ dev.off()
 # 6vs16 for each separate accession
 # the temperature effect for 6017 (the main effect)
 res.6017.6vs16 <- results(dds.full.deseq, contrast=c("temperature","6C","16C"))
-res.6017.6vs16.FC2_p5 <- getDF_select_FC_padj(res.6017.6vs16, FC = 2, padj = 0.05)
+res.6017.6vs16.FC2_p5 <- getDF_select_FC_padj(res.6017.6vs16, FC = 0, padj = 0.1)
 save(res.6017.6vs16, file = 'Results/Transcriptome/DiffExpr_allAcns/DESeq2_results/res.6017.6vs16.quasiMap.pseudoG.Rdata')
 write.table(res.6017.6vs16.FC2_p5, file = 'Results/Transcriptome/DiffExpr_allAcns/6vs16_6017_quasiMap_pseudoG.txt', sep = '\t', row.names = F, quote = F)
 # voclanoPlot 6vs16 in 6017
 pdf('Results/Transcriptome/DiffExpr_allAcns/Plots/VolcanoPlots/volcano_6vs16_6017_quasiMap_pseudoG.pdf')
-volcanoplot_geneSelection(res.6017.6vs16.FC2_p5$gene, res.6017.6vs16, main = '6vs16 in 6017', FC = 2, padj = 0.05)
+volcanoplot_geneSelection(res.6017.6vs16.FC2_p5$gene, res.6017.6vs16, main = '6vs16 in 6017', FC = 0, padj = 0.1)
 dev.off()
 
 # the temperature effect for 6909.
 # this is the main effect *plus* the interaction term
 # (the extra condition effect in 6909 compared to 6017).
 res.6909.6vs16 <- results(dds.full.deseq, contrast=list( c("temperature_6C_vs_16C","accession6909.temperature6C") ))
-res.6909.6vs16.FC2_p5 <- getDF_select_FC_padj(res.6909.6vs16, FC = 2, padj = 0.05)
+res.6909.6vs16.FC2_p5 <- getDF_select_FC_padj(res.6909.6vs16, FC = 0, padj = 0.1)
 save(res.6909.6vs16, file = 'Results/Transcriptome/DiffExpr_allAcns/DESeq2_results/res.6909.6vs16.quasiMap.pseudoG.Rdata')
 write.table(res.6909.6vs16.FC2_p5, file = 'Results/Transcriptome/DiffExpr_allAcns/6vs16_6909_quasiMap_pseudoG.txt', sep = '\t', row.names = F, quote = F)
 # voclanoPlot 6vs16 in 6909
 pdf('Results/Transcriptome/DiffExpr_allAcns/Plots/VolcanoPlots/volcano_6vs16_6909_quasiMap_pseudoG.pdf')
-volcanoplot_geneSelection(res.6909.6vs16.FC2_p5$gene, res.6909.6vs16, main = '6vs16 in 6909', FC = 2, padj = 0.05)
+volcanoplot_geneSelection(res.6909.6vs16.FC2_p5$gene, res.6909.6vs16, main = '6vs16 in 6909', FC = 0, padj = 0.1)
 dev.off()
 
 # the temperature effect for 9559
 # this is the main effect *plus* the interaction term
 # (the extra condition effect in 9559 compared to 6017).
 res.9559.6vs16 <- results(dds.full.deseq, contrast=list( c("temperature_6C_vs_16C","accession9559.temperature6C") ))
-res.9559.6vs16.FC2_p5 <- getDF_select_FC_padj(res.9559.6vs16, FC = 2, padj = 0.05)
+res.9559.6vs16.FC2_p5 <- getDF_select_FC_padj(res.9559.6vs16, FC = 0, padj = 0.1)
 save(res.9559.6vs16, file = 'Results/Transcriptome/DiffExpr_allAcns/DESeq2_results/res.9559.6vs16.quasiMap.pseudoG.Rdata')
 write.table(res.9559.6vs16.FC2_p5, file = 'Results/Transcriptome/DiffExpr_allAcns/6vs16_9559_quasiMap_pseudoG.txt', sep = '\t', row.names = F, quote = F)
 # voclanoPlot 6vs16 in 9559
 pdf('Results/Transcriptome/DiffExpr_allAcns/Plots/VolcanoPlots/volcano_6vs16_9559_quasiMap_pseudoG.pdf')
-volcanoplot_geneSelection(res.9559.6vs16.FC2_p5$gene, res.9559.6vs16, main = '6vs16 in 9559', FC = 2, padj = 0.05)
+volcanoplot_geneSelection(res.9559.6vs16.FC2_p5$gene, res.9559.6vs16, main = '6vs16 in 9559', FC = 0, padj = 0.1)
 dev.off()
 
 # the temperature effect for 9728
 # this is the main effect *plus* the interaction term
 # (the extra condition effect in 9728 compared to 6017).
 res.9728.6vs16 <- results(dds.full.deseq, contrast=list( c("temperature_6C_vs_16C","accession9728.temperature6C") ))
-res.9728.6vs16.FC2_p5 <- getDF_select_FC_padj(res.9728.6vs16, FC = 2, padj = 0.05)
+res.9728.6vs16.FC2_p5 <- getDF_select_FC_padj(res.9728.6vs16, FC = 0, padj = 0.1)
 save(res.9728.6vs16, file = 'Results/Transcriptome/DiffExpr_allAcns/DESeq2_results/res.9728.6vs16.quasiMap.pseudoG.Rdata')
 write.table(res.9728.6vs16.FC2_p5, file = 'Results/Transcriptome/DiffExpr_allAcns/6vs16_9728_quasiMap_pseudoG.txt', sep = '\t', row.names = F, quote = F)
 # voclanoPlot 6vs16 in 9728
 pdf('Results/Transcriptome/DiffExpr_allAcns/Plots/VolcanoPlots/volcano_6vs16_9728_quasiMap_pseudoG.pdf')
-volcanoplot_geneSelection(res.9728.6vs16.FC2_p5$gene, res.9728.6vs16, main = '6vs16 in 9728', FC = 2, padj = 0.05)
+volcanoplot_geneSelection(res.9728.6vs16.FC2_p5$gene, res.9728.6vs16, main = '6vs16 in 9728', FC = 0, padj = 0.1)
 dev.off()
 
 
