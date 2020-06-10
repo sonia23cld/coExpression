@@ -1,0 +1,361 @@
+---
+title: "Correction_outliers"
+author: "Sonia Celestini"
+date: "6/9/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+	warning = FALSE)
+library(reshape2)
+library(gridExtra)
+library(viridis)
+load('/Volumes/nordborg/user/sonia.celestini/WGCNA_newData/all.expr.RData')
+samples <- read.table('/Volumes/nordborg/user/sonia.celestini/WGCNA_newData/samples_updated.txt', header = T, sep = ' ', comment.char = "")
+# select samples
+samples <- samples[samples$Selected == 'yes', ]
+# prepare list of samples
+samples$accession <- as.factor(samples$accession)
+samples$temperature <- factor(as.character(samples$temperature))
+samples$replicate <- as.factor(samples$replicate)
+samples$basename <- as.character(samples$basename)
+samples$acnTemp <- paste(samples$accession, samples$temperature, sep = '_')
+row.names(samples) <- samples$sample
+
+#some info that we need to put in order our data
+orderacns<- c('6017', '6909', '8242', '9075', '9433', '9559', '9728', '9888')
+#define outliers
+outliers_samples<- data.frame('Accession'= orderacns, 'Temperature'= c('16C', '6C','16C','16C','16C','16C','16C','16C'), 'Replicate'=c('rep3', 'rep1','rep1','rep1','rep2','rep1','rep2','rep1'))
+```
+
+
+```{r define function you will need}
+get_upper_tri <- function(cormat){
+    cormat[lower.tri(cormat)]<- NA
+    return(cormat)}
+
+reorder_cormat <- function(cormat){
+# Use correlation between variables as distance
+dd <- as.dist((1-cormat)/2)
+hc <- hclust(dd)
+cormat <-cormat[hc$order, hc$order]
+}
+
+```
+
+
+From the PCA of the individual accessions, some samples (mostly in 16C) look too spreaded. We will try to look to the loadings to identify genes that drive this behaviour. Before, we check if the outliers samples cluster together in the PCA.
+
+```{r PCA with the subsetted data all accessions together, identify outliers}
+#do PCA highlighting the outliers
+pca_allacn<- prcomp(all.expr$data)
+df_out<- as.data.frame(pca_allacn$x)
+df_out$Accession<- sapply(rownames(df_out), function(x) {strsplit(x, split = '_')[[1]][2]})
+df_out$Temperature <- sapply(rownames(df_out), function(x) {strsplit(x, split = '_')[[1]][1]})
+df_out$Replicate<- sapply(rownames(df_out), function(x) {name <-strsplit(x, split = '_')[[1]][3]
+                      rep<- samples$replicate[samples$sample == name]
+                      return(rep)})
+
+highlight<- df_out[df_out[,49] == outliers_samples[1, 1] & df_out[,50] == outliers_samples[1, 2] & df_out[,51] == outliers_samples[1, 3],]
+for (i in 2:nrow(outliers_samples)) {
+  highlight<- rbind(highlight, df_out[df_out[,49] == outliers_samples[i, 1] & df_out[,50] == outliers_samples[i, 2] & df_out[,51] == outliers_samples[i, 3],])
+}
+#change the PC as you need
+percentage <- round(pca_allacn$sdev / sum(pca_allacn$sdev) * 100, 2)
+percentage <- paste(colnames(df_out), "(", paste( as.character(percentage), "%", ")", sep="") )
+ggplot(df_out, aes(PC2, PC3, shape=Temperature), color='black') +
+  geom_point(size=3) +
+  #scale_color_manual(values=c('#0047BB', '#8BD52D')) +
+  geom_point(data=highlight, aes(PC2,PC3), color='red',size=3) +
+  xlab(percentage[2]) +
+  ylab(percentage[3]) + 
+  theme(aspect.ratio=1, legend.position = "right")
+```
+
+
+```{r loadings of the PCs}
+#outliers are discriminated by different PCs in each accession, make a list to select the PC you want to look into
+PC1<- c('9433','9559')
+#first of all, check the loadings distribution to decide a threshold 
+for (acn in orderacns) {
+  if (acn %in% PC1) {
+    hist(pcaData[[acn]]$rotation[,1], main = acn, breaks = 30)
+  }
+  else {
+    hist(pcaData[[acn]]$rotation[,2], main = acn, breaks = 30)
+  }
+}
+
+#define threshold for every acn
+threshold<- c(0.025, 0.02, 0.02, 0.025, 0.02, 0.025, 0.025, 0.02, 0.02)
+outliers<- list()
+for (i in 1:8) {
+  acn <- orderacns[[i]]
+  if (acn %in% PC1) {
+    print(paste(acn, nrow(pcaData[[acn]]$rotation[abs(pcaData[[acn]]$rotation[,1]) > threshold[[i]],]), sep = ' '))
+    outliers[[acn]]<- as.vector(rownames(pcaData[[acn]]$rotation[abs(pcaData[[acn]]$rotation[,1]) > threshold[[i]],]))
+  }
+  else {
+    print(paste(acn, nrow(pcaData[[acn]]$rotation[abs(pcaData[[acn]]$rotation[,2]) > threshold[[i]],]), sep = ' '))
+    outliers[[acn]]<- as.vector(rownames(pcaData[[acn]]$rotation[abs(pcaData[[acn]]$rotation[,2]) > threshold[[i]],]))
+  }
+  if (acn == '9559') { #because for 9559 I'm checking both PC
+    print(paste(acn, '_PC2 ', nrow(pcaData[[acn]]$rotation[abs(pcaData[[acn]]$rotation[,2]) > threshold[[9]],]), sep = ''))
+    outliers$'9559PC2'<- as.vector(rownames(pcaData[[acn]]$rotation[abs(pcaData[[acn]]$rotation[,2]) > threshold[[9]],]))
+  }
+}
+
+freq<- as.data.frame(table(unlist(outliers)))
+nrow(freq[freq$Freq > 5,])
+
+#cut off the genes that are present more than 5 times and plot again PCA
+genes_cutoff<- as.vector(freq$Var1[freq$Freq > 5])
+new_expr<- all.expr$data[,!colnames(all.expr$data) %in% genes_cutoff]
+
+p2 <- list()
+for (acn in orderacns) {
+  subtable<- new_expr[grepl(acn, rownames(new_expr)),]
+  pcaData<- prcomp(subtable)
+  df_out<- as.data.frame(pcaData$x)
+  df_out$temperature <- sapply(rownames(df_out), function(x) {strsplit(x, split = '_')[[1]][1]})
+  df_out$replicate<- sapply(rownames(df_out), function(x) {name <-strsplit(x, split = '_')[[1]][3]
+                      rep<- samples$replicate[samples$sample == name]
+                      return(rep)})
+  print(acn)
+  percentage <- round(pcaData$sdev / sum(pcaData$sdev) * 100, 2)
+  percentage <- paste( colnames(df_out), "(", paste( as.character(percentage), "%", ")", sep="") )
+  p2[[acn]]<-ggplot(df_out, aes(PC1, PC2, color=temperature, shape=replicate)) +
+  geom_point(size=3) +
+  scale_color_manual(values=c('#0047BB', '#8BD52D')) +
+  ggtitle(acn) +
+  xlab(percentage[1]) +
+  ylab(percentage[2]) + 
+  theme(aspect.ratio=1, legend.position = "none")
+}
+nCol <- 4
+do.call("grid.arrange", c(p2, ncol=nCol))
+```
+
+
+PCA doesn't seem to be the best tool to help us, so we will check correlations in gene expression between different samples.
+If the outliers have a similar cause, there should be a set of genes where the difference between outlier and other samples is similar between the outlier samples.
+Therefore we can do a simple calculation of the difference between outlier and ‘regular’ samples, by taking the log fold change. This is then the log fold change between an outlier sample and the average of the two regular samples in the same temperature/accession.
+To test similarity between the outliers, we can calculate the correlations of the log fold changes between the different outlier samples for each of the genes. The ones with highest correlations are the prime suspects.
+Additionally we can make a heatmap of the log fold changes for each of the outliers and cluster the genes with similar log fold changes.
+
+Heatmap pairwise correlation between samples
+
+```{r pairwise correlation}
+#change rownames with replicate instead of sample name
+rownames(all.expr$data) <- sapply(rownames(all.expr$data), function(x) {name <-strsplit(x, split = '_')[[1]][3]
+                      rep<- samples$replicate[samples$sample == name]
+                      newname<- paste(strsplit(x, split = '_')[[1]][1], strsplit(x, split = '_')[[1]][2], rep, sep = '_')
+                      return(newname)})
+
+combinations<- data.frame(matrix(ncol = nrow(all.expr$data), nrow= nrow(all.expr$data)))
+colnames(combinations)<- rownames(all.expr$data)
+row.names(combinations)<- rownames(all.expr$data)
+#combinations<-t(combn(rownames(all.expr$data), 2))
+#combinations<- as.data.frame(combinations)
+#combinations$correlation<- NA
+for (i in 1:nrow(combinations)) {
+  for (j in 1:ncol(combinations)) {
+  x<- rownames(combinations)[i]
+  y<- colnames(combinations)[j]
+  combinations[i,j]<- cor.test(as.numeric(all.expr$data[rownames(all.expr$data) %in% x,]), as.numeric(all.expr$data[rownames(all.expr$data) %in% y,]), method = 'pearson')$estimate
+  }
+} 
+
+#order (you need function from above)
+combinations<- reorder_cormat(combinations)
+
+upper_tri<- get_upper_tri(combinations)
+melted <- melt(as.matrix(upper_tri), na.rm = TRUE)
+
+# Heatmap
+ggplot(data = melted, aes(Var1, Var2, fill = value))+
+ geom_tile(color = "white")+ 
+  scale_fill_gradientn(colours= viridis(100),
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 90, vjust = 1, 
+    size = 10, hjust = 1))+
+ coord_fixed()
+
+#try with other orders
+#not sorted
+order<- rownames(all.expr$data)
+order<- order[order(order)]
+combinations<- combinations[match(order, rownames(combinations)), match(order, colnames(combinations))]
+upper_tri<- get_upper_tri(combinations)
+melted <- melt(as.matrix(upper_tri), na.rm = TRUE)
+ggplot(data = melted, aes(Var1, Var2, fill = value))+
+ geom_tile(color = "white")+ 
+  scale_fill_gradientn(colours= viridis(100),
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 90, vjust = 1, 
+    size = 10, hjust = 1))+
+ coord_fixed()
+
+#with outliers before
+order<- c(vector_outliers, order[!order %in% vector_outliers])
+combinations<- combinations[match(order, rownames(combinations)), match(order, colnames(combinations))]
+upper_tri<- get_upper_tri(combinations)
+melted <- melt(as.matrix(upper_tri), na.rm = TRUE)
+ggplot(data = melted, aes(Var1, Var2, fill = value))+
+ geom_tile(color = "white")+ 
+  scale_fill_gradientn(colours= viridis(100),
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 90, vjust = 1, 
+    size = 10, hjust = 1))+
+ coord_fixed()
+```
+The result is similat to the PCA. 
+
+```{r Log fold change outliars}
+
+#change rownames with replicate
+rownames(all.expr$data) <- sapply(rownames(all.expr$data), function(x) {name <-strsplit(x, split = '_')[[1]][3]
+                      rep<- samples$replicate[samples$sample == name]
+                      newname<- paste(strsplit(x, split = '_')[[1]][1], strsplit(x, split = '_')[[1]][2], rep, sep = '_')
+                      return(newname)})
+
+vector_outliers<- c()
+for (i in 1:8) {
+  vector_outliers<- c(vector_outliers, paste(outliers_samples[i,2], '_', outliers_samples[i,1], '_', outliers_samples[i,3], sep = '')) #(samples$sample[samples$replicate == outliers_samples[i,3] & samples$accession == outliers_samples[i,1] & samples$temperature == outliers_samples[i,2]]), sep = ''))
+}
+
+logfoldchange <- data.frame(matrix(ncol = ncol(all.expr$data), nrow = 0))
+for (x in 1:8) {
+  i<- vector_outliers[x]
+  related_samples<- strsplit(i, split = '_')[[1]][1:2]
+  related_samples<- paste(related_samples[1], related_samples[2], sep = '_')
+  subtable<- all.expr$data[grepl(related_samples, rownames(all.expr$data)),]
+  average<- apply(subtable[!rownames(subtable) == i,], 2, mean)
+  logfoldchange<- rbind(logfoldchange, mapply(function(y,z){y-z}, y=subtable[rownames(subtable) == i,], z=average))
+  rownames(logfoldchange)[[x]]<- related_samples
+}
+colnames(logfoldchange) <- colnames(all.expr$data)
+
+hist(as.matrix(logfoldchange), breaks = 100)
+#max(logfoldchange)
+#[1] 8.58595
+# min(logfoldchange)
+#[1] -5.144544
+ apply(logfoldchange, 1, function(x) {which(x == max(logfoldchange))})
+ 
+#heatmap logfold change
+ pheatmap(as.matrix(t(logfoldchange)), color = viridis(length(min(logfoldchange):max(logfoldchange))), show_rownames = F)
+
+#this is a trial to see what happen to the PCA if I cut all the genes with high log fold change in at least 4 samples (nothing changed in the end)
+trial<- logfoldchange
+trial[trial > -1 & trial < 1] <- 0
+bho<- apply(trial, 2, function(x) count(!x == 0))
+hist(bho)
+genes_cutoff<- colnames(logfoldchange)[as.vector(which(bho > 4))]
+```
+
+
+```{r Correlation log fold change between genes and its heatmap}
+cormat <- round(cor(logfoldchange),2)
+
+#order 
+cormat <- reorder_cormat(cormat)
+
+upper_tri_cormat <- get_upper_tri(cormat) 
+#upper_tri_cormat<- as.data.frame(upper_tri_cormat) #as a dataframe is not working, I don't know why
+
+#plot distribution
+hist(upper_tri_cormat, breaks = 500, na.rm= TRUE)
+
+#cut off the genes with correlation 1 and -1
+length(upper_tri_cormat[upper_tri_cormat %in% 1])
+length(upper_tri_cormat[upper_tri_cormat %in% -1])
+#total should be in this case (380+149)*2=1058
+genes_cutoff<- c()
+for (i in 1:nrow(upper_tri_cormat)) {
+  genes_cutoff<- c(genes_cutoff, colnames(upper_tri_cormat)[upper_tri_cormat[i,] %in% 1])
+  genes_cutoff<- c(genes_cutoff, colnames(upper_tri_cormat)[upper_tri_cormat[i,] %in% -1])
+  genes_cutoff<- c(genes_cutoff, rownames(upper_tri_cormat)[upper_tri_cormat[,i] %in% 1])
+  genes_cutoff<- c(genes_cutoff, rownames(upper_tri_cormat)[upper_tri_cormat[,i] %in% -1])
+}
+genes_cutoff<- unique(genes_cutoff)
+
+#length(na.omit(trial[trial == 0.14])) #if you have data frame
+new_expr<- all.expr$data[,!colnames(all.expr$data) %in% genes_cutoff]
+
+#plot pca to see if there is a difference
+p2 <- list()
+for (acn in orderacns) {
+  subtable<- new_expr[grepl(acn, rownames(new_expr)),]
+  pcaData<- prcomp(subtable)
+  df_out<- as.data.frame(pcaData$x)
+  df_out$temperature <- sapply(rownames(df_out), function(x) {strsplit(x, split = '_')[[1]][1]})
+  df_out$replicate<- sapply(rownames(df_out), function(x) {strsplit(x, split = '_')[[1]][3]})
+  print(acn)
+  percentage <- round(pcaData$sdev / sum(pcaData$sdev) * 100, 2)
+  percentage <- paste( colnames(df_out), "(", paste( as.character(percentage), "%", ")", sep="") )
+  p2[[acn]]<-ggplot(df_out, aes(PC1, PC2, color=temperature, shape=replicate)) +
+  geom_point(size=3) +
+  scale_color_manual(values=c('#0047BB', '#8BD52D')) +
+  ggtitle(acn) +
+  xlab(percentage[1]) +
+  ylab(percentage[2]) + 
+  theme(aspect.ratio=1, legend.position = "none")
+}
+nCol <- 4
+do.call("grid.arrange", c(p2, ncol=nCol))
+
+
+melted_cormat <- melt(upper_tri_cormat, na.rm = TRUE)
+# Heatmap
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradientn(colours=viridis(100),
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 90, vjust = 1, 
+    size = 5, hjust = 1))+
+ coord_fixed()
+```
+We can not identify any pattern that might be in common between the outliers. 
+We will look now at the Go Term enrichment for the genes with high log fold change for every outlier to understant if there is a specific biological process that is driving their behavior. 
+
+```{r Go enrichment for outliers}
+#first of all, look at the log fold change distribution for every outlier
+for (i in 1:nrow(logfoldchange)) {
+  hist(as.matrix(logfoldchange)[i,], breaks = 100, main = rownames(logfoldchange)[i])
+  print(paste(rownames(logfoldchange)[i], 'max', max(logfoldchange[i,]), 'min', min(logfoldchange[i,]), sep = ' '))
+}
+
+#make a table to define thresholds for selecting genes
+thr_log<- data.frame('Outlier'= vector_outliers, 'Thr1'=c(-1, -1.2, -0.8, -0.8, -1.5, -1.5, -1.2, -1.5), 'Thr2'=c(1.2, 1.6, 1, 0.8, 3, 2, 1, 1.5))
+#select genes
+Out_genes<- list()
+for (i in 1:nrow(logfoldchange)) {
+  x<- rownames(logfoldchange)[i]
+  Out_genes[[x]]<- colnames(logfoldchange)[thr_log[i, 2] < logfoldchange[i,] & logfoldchange[i,] > thr_log[i, 3]]
+}
+
+#Go term enrichment (Top.Go function is defined in Rfunctions script)
+library(topGO)
+load('/Volumes/nordborg/pub/forPieter/WGCNA/Results/GeneUniverse&Annotation.RData')
+for (i in 1:length(Out_genes)) {
+  genes<- Out_genes[[i]]
+  Result<- Top.Go(genes, go_ids, genesuniverse, gene_2_GO)
+  #save the result
+  write.table(Result, file = paste('/Volumes/nordborg/user/sonia.celestini/WGCNA_newData/GoEnrichment_Outliers/', vector_outliers[i], '.csv', sep=''), sep=",", quote=FALSE, row.names=FALSE)
+}
+```
+
+Overall plants are responding to both biotic and abiotic stresses. We will keep these samples as they can not affect the network.
+
+
+
+
+
