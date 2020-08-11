@@ -1,0 +1,787 @@
+---
+title: "WGCNA"
+author: "Pieter Clauw"
+date: "03/05/2019"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+#library(tximport)
+library(DESeq2)
+#library(vsn)
+#library(limma)
+library(ggplot2)
+#source('Rfunctions.r')
+knitr::opts_knit$set(root.dir = "/users/sonia.celestini/New_data/")
+options(stringsAsFactors = F)
+```
+
+## WGCNA 6C and 16C
+Script to define co-expression of genes over multiple accessions and replicates in 6C and 16C
+
+```{r load data, cache = T}
+samples <- read.table('/Volumes/nordborg/user/sonia.celestini/WGCNA_newData/samples_updated.txt', header = T, sep = ' ', comment.char = "")
+# select samples
+samples <- samples[samples$Selected == 'yes', ]
+# prepare list of samples
+samples$accession <- as.factor(samples$accession)
+samples$temperature <- factor(as.character(samples$temperature))
+samples$replicate <- as.factor(samples$replicate)
+samples$basename <- as.character(samples$basename)
+samples$acnTemp <- paste(samples$accession, samples$temperature, sep = '_')
+row.names(samples) <- samples$sample
+
+```
+
+```{r read in count data}
+Araport11 <- read.table('/Volumes/nordborg/user/sonia.celestini/WGCNA_newData/Araport11_GFF3_genes_transposons.201606.gtf', sep ='\t') 
+
+# prepare Araport11 data
+colnames(Araport11) <- c('chr', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes')
+Araport11$attributes <- as.character(Araport11$attributes)
+library(stringr)
+Araport11[,9:10]<- str_split_fixed(Araport11$attributes, ';', 3)[,1:2]
+Araport11$V10<- sub(".*id ", "", Araport11$V10)
+
+# create transcript to gene annotation dataframe
+tx2gene <- data.frame('transcriptID' = sub(".*id ", "", Araport11$attributes), 'geneID' = Araport11$V10)
+
+# get the first txi to use then in the forloop 
+acn <- unique(samples$accession)[1]
+basename <- samples$basename[samples$accession %in% acn]
+files <- file.path('/Volumes/nordborg/user/sonia.celestini/WGCNA_newData/SalmonQuant/', basename,'_quasiMap_pseudoG_Trimmed/quant.sf', fsep = '')
+names(files) <- samples$sample[samples$basename %in% basename]
+txi <- tximport(files, type = 'salmon', tx2gene = tx2gene, dropInfReps = T)
+
+# import count data for all accessions (merge all txi)
+for (acn in unique(samples$accession)[-1]) {
+  basename <- samples$basename[samples$accession %in% acn]
+  files <- file.path('/Volumes/nordborg/user/sonia.celestini/WGCNA_newData/SalmonQuant/', basename,'_quasiMap_pseudoG_Trimmed/quant.sf', fsep = '')
+  names(files) <- samples$sample[samples$basename %in% basename]
+  txi_2 <- tximport(files, type = 'salmon', tx2gene = tx2gene, dropInfReps = T)
+  idx <- intersect(rownames(txi$counts), rownames(txi_2$counts))
+  txi$abundance <- cbind(txi$abundance[idx,], txi_2$abundance[idx,])
+  txi$counts <- cbind(txi$counts[idx,], txi_2$counts[idx,])
+  txi$length <- cbind(txi$length[idx,], txi_2$length[idx,])
+  #txi$countsFromAbundance <- c(txi$countsFromAbundance, txi_2$countsFromAbundance) #you can do it to see the results, but if they are all the same leave only one word
+}
+
+#match Colnames with samples order
+txi$abundance <- txi$abundance[,row.names(samples)]
+txi$counts <- txi$counts[,row.names(samples)]
+txi$length <- txi$length[,row.names(samples)]
+
+# DESeq
+dds.full <- DESeqDataSetFromTximport(txi, colData = samples, design = ~  replicate + accession + temperature + accession:temperature)
+dds <- estimateSizeFactors(dds.full)
+# select only genes with more than in 10 reads in minimum 10% of the samples
+idx <- rowSums(counts(dds) >= 10 ) >= nrow(samples) * 0.1
+dds<- dds[idx,]
+
+
+```
+
+
+## Variance stabilisation
+RNA-seq coutn data is typically heteroscedastic, meansing that the variance correlates with the mean.
+The variance stabilisation will make the count data more homoscedastic.
+This cannot be done for differential expression analyis,
+but is advised for clustering, PCA and visualisation.
+For more details see [DESeQ2 preprint](https://www.biorxiv.org/content/biorxiv/early/2014/02/19/002832.full.pdf).
+
+```{r compare VST to rlog}
+dds.varStab <- varianceStabilizingTransformation(dds, blind=F)
+dds.rlog <- rlog(dds, blind=F)
+
+
+par(mfrow = c(1,2))
+meanSdPlot(assay(dds.varStab))
+meanSdPlot(assay(dds.rlog))
+```
+From the plots showing the standard deviation versus the mean of each gene, it is clear that the variance stabilizing transformation performs slighly better in reducing the heteroscedascity of the data compared to the tlog transformation.
+Therefore we continue with the variance stabilizing transformed data.
+
+
+```{r PCA}
+
+# PCA plot
+pcaData <- plotPCA(dds.varStab, intgroup=c("temperature", "replicate"), returnData=T)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+# PCA plot temperature-accession
+pcaData2 <- plotPCA(dds.varStab, intgroup=c("temperature", "accession"), returnData=TRUE)
+
+par(mfrow = c(1,2))
+ggplot(pcaData, aes(PC1, PC2, color=temperature, shape=replicate)) +
+  geom_point(size=3) +
+  scale_color_manual(values=c('#0047BB', '#8BD52D')) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed()
+ggplot(pcaData2, aes(PC1, PC2, color=temperature, shape=accession)) +
+  geom_point(size=3) +
+  scale_color_manual(values=c('#0047BB', '#8BD52D')) +
+  scale_shape_manual(values=c(15, 19, 17, 18, 4, 8, 9, 11)) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed()
+
+```
+The replicate effect is not obvious in the data.
+PC1 is mainly splitting up in the two temperatures
+PC2 is a split up between Col-0 (6909) and the rest.
+
+
+### check samples per accession
+```{r PCA per accession}
+library(gridExtra)
+# PCA plot
+p <- list()
+for (acn in unique(samples$accession)) {
+  samples.a <- samples$sample[samples$accession == acn]
+  #dds.varStab.a <- dds.varStab[dds.varStab$sample %in% samples.a, ]
+  dds.varStab.a <-dds.varStab[ , dds.varStab$accession == acn]
+  pcaData <- plotPCA(dds.varStab.a, intgroup=c("temperature", "replicate"), returnData=T)
+  percentVar <- round(100 * attr(pcaData, "percentVar"))
+  p[[acn]] <-ggplot(pcaData, aes(PC1, PC2, color=temperature, shape=replicate)) +
+  geom_point(size=3) +
+  scale_color_manual(values=c('#0047BB', '#8BD52D')) +
+  ggtitle(acn) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme(aspect.ratio=1, legend.position = "none")
+}
+nCol <- 4
+do.call("grid.arrange", c(p, ncol=nCol))
+
+```
+
+
+## remove batch effect
+```{r remove batch effect}
+library(limma)
+dds.varStab.NB <- dds.varStab
+assay(dds.varStab.NB) <- removeBatchEffect(assay(dds.varStab.NB), dds.varStab.NB$replicate)
+
+pcaData <- plotPCA(dds.varStab.NB, intgroup=c("temperature", "accession"), returnData=T)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(PC1, PC2, color=temperature, shape=accession)) +
+  geom_point(size=3) +
+  scale_shape_manual(values=c(15, 19, 17, 18, 4, 8, 9, 11)) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed()
+```
+After removing batch effect, the temperature split within each accession is more clearly defined.
+Therefore we continue with the batch correct data.
+```{r PCA per accession after removing batch effect}
+library(gridExtra)
+# PCA plot
+p <- list()
+pcaData<- list()
+for (acn in unique(samples$accession)) {
+  samples.a <- samples$sample[samples$accession == acn]
+  #dds.varStab.a <- dds.varStab[dds.varStab$sample %in% samples.a, ]
+  dds.varStab.a <-dds.varStab.NB[ , dds.varStab.NB$accession == acn]
+  pcaData[[acn]] <- plotPCA(dds.varStab.a, intgroup=c("temperature", "replicate"), returnData=T)
+  percentVar <- round(100 * attr(pcaData[[acn]], "percentVar"))
+  p[[acn]] <-ggplot(pcaData[[acn]], aes(PC1, PC2, color=temperature, shape=replicate)) +
+  geom_point(size=3) +
+  scale_color_manual(values=c('#0047BB', '#8BD52D')) +
+  ggtitle(acn) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  theme(aspect.ratio=1, legend.position = "none")
+}
+nCol <- 4
+do.call("grid.arrange", c(p, ncol=nCol))
+
+```
+
+
+## WGCNA
+Step-by-step network construction
+```{r data for WGCNA}
+counts.varStab.NB <- t(assay(dds.varStab.NB))
+expr.6C <- counts.varStab.NB[as.character(samples$sample[samples$temperature == '6C']), ]
+expr.16C <- counts.varStab.NB[as.character(samples$sample[samples$temperature == '16C']), ]
+# combine data of both temperatures in a list
+nSets <- 2
+expr<- vector(mode = "list", length = nSets)
+expr[[1]] <- list(data = as.data.frame(expr.6C))
+expr[[2]] <- list(data = as.data.frame(expr.16C))
+names(expr) <- c('6C', '16C')
+```
+
+```{r library change, include = F}
+detach("package:DESeq2", unload = T)
+detach("package:tximport", unload = T)
+library(WGCNA)
+```
+
+```{r data QC}
+#checkSets(expr)
+#par(mfrow=c(6,4))
+# QQ scatter plots, chekc normal distribution of expression within each samples
+for (i in 1:nSets)
+{
+  readmatrix <- expr[[i]]$data
+  for (j in 1:nrow(readmatrix))
+  {
+    sampleiwant <- t(readmatrix[j,])
+    qqnorm(sampleiwant, pch = 1, frame = FALSE, main = paste(names(expr[i]), 'sample', row.names(readmatrix)[j], sep = ' '))
+    qqline(sampleiwant, col = "red", lwd = 2)
+  }
+}
+
+```
+For each sample, the expression seems normally distributed, based on QQ-plot.
+
+```{r filter genes}
+# filter out genes with too many missing values and zero variance across samples.
+# for consensus, both datasets need to be checked simultaneously. Use geneFilterMS.
+expr.filter <- vector(mode = "list", length = nSets)
+for (i in 1:nSets)
+{
+  expr.filter[[i]] <- list(data = geneFilter(expr[[i]]$data))
+}
+names(expr.filter) <- names(expr)
+checkSets(expr.filter, checkStructure = T)
+```
+
+
+```{r create categories of differentially expressed genes and create table to start co-expression analysis}
+# select genes you want to work with, based on differential expression
+# create categories (G, T, GxT)
+library(DESeq2)
+genes.diff<- list()
+dds.intermediate<- estimateSizeFactors(dds.full) 
+dds.intermediate <- estimateDispersions(dds.intermediate) 
+genes.diff$interaction <- nbinomLRT(dds.intermediate, full = ~ replicate + accession + temperature + accession:temperature, reduced = ~ replicate + accession + temperature)
+genes.diff$temperature<- nbinomLRT(dds.intermediate, full = ~ replicate + accession + temperature + accession:temperature, reduced = ~ replicate + accession)
+genes.diff$genotype<- nbinomLRT(dds.intermediate, full = ~ replicate + accession + temperature + accession:temperature, reduced = ~ replicate + temperature)
+genes.diff2 <- lapply(genes.diff, function(x) {results(x)})
+genes.diff3<- lapply(genes.diff2, function(x) {getDF_select_FC_padj(x, FC = 0, padj = 0.1)})
+allgenes<- lapply(genes.diff3, function(x) {x$gene})
+allgenes<- unique(unlist(allgenes))
+
+#merge expr.filter tables selecting the genes
+expression<- lapply(expr.filter, function(x) {x$data[colnames(x$data) %in% allgenes]})
+for (i in 1:nSets) {
+  expression[[i]]<- list(data = expression[[i]])
+}
+##put rows in order and change the names before merging the tables
+orderiwant6C<- samples[,1:2][samples$sample %in% rownames(expr.filter[[1]]$data),]
+orderiwant6C<- orderiwant6C[order(orderiwant6C$accession),]
+orderiwant6C$paste<- paste('6C_', orderiwant6C$accession,'_', orderiwant6C$sample, sep = '')
+orderiwant16C<- samples[,1:2][samples$sample %in% rownames(expr.filter[[2]]$data),]
+orderiwant16C<- orderiwant16C[order(orderiwant16C$accession),]
+orderiwant16C$paste<- paste('16C_', orderiwant16C$accession,'_', orderiwant16C$sample, sep = '')
+expression[[1]]$data<- expression[[1]]$data[match(orderiwant6C$sample, rownames(expression[[1]]$data)),]
+expression[[2]]$data<- expression[[2]]$data[match(orderiwant16C$sample, rownames(expression[[2]]$data)),]
+rownames(expression[[1]]$data)<- orderiwant6C$paste
+rownames(expression[[2]]$data)<- orderiwant16C$paste
+##merge tables
+all.expr<- list()
+all.expr$data<- rbind(expression[[1]]$data, expression[[2]]$data)
+#save(all.expr, file='/users/sonia.celestini/New_data/WGCNA/all.expr.RData')
+detach("package:DESeq2", unload = T)
+```
+
+```{r heatmap for samples expression to double check how they cluster}
+# load package
+library(pheatmap)
+library(viridis)
+orderacns<- c('6017', '6909', '8242', '9075', '9433', '9559', '9728', '9888')
+for (acn in orderacns) {
+  subtable<- all.expr$data[grepl(acn, rownames(all.expr$data)),]
+  pdf(file = paste('/groups/nordborg/user/sonia.celestini/WGCNA_newData/Heatmap_Expression_', acn, '.pdf', sep = ''), width = 6, height = 8)
+  pheatmap(as.matrix(t(subtable)), color = viridis(length(min(all.expr$data):max(all.expr$data))), show_rownames = F)
+  dev.off()
+}
+
+#for all accessions together
+#change labels with replicates
+rownames(all.expr$data) <- sapply(rownames(all.expr$data), function(x) {name <-strsplit(x, split = '_')[[1]][3]
+                      rep<- samples$replicate[samples$sample == name]
+                      newname<- paste(strsplit(x, split = '_')[[1]][1], strsplit(x, split = '_')[[1]][2], rep, sep = '_')
+                      return(newname)})
+pdf(file = '/groups/nordborg/user/sonia.celestini/WGCNA_newData/Heatmap_Expression_allacn.pdf', width = 6, height = 8)
+pheatmap(as.matrix(t(all.expr$data)), color = viridis(length(min(all.expr$data):max(all.expr$data))), show_rownames = F)
+dev.off()
+```
+
+```{r Total PCA with accessions all together and subsetted data}
+# PCA plot
+pcaData<- prcomp(all.expr$data)
+df_out<- as.data.frame(pcaData$x)
+df_out$temperature <- sapply(rownames(df_out), function(x) {strsplit(x, split = '_')[[1]][1]})
+df_out$accession<- sapply(rownames(df_out), function(x) {strsplit(x, split = '_')[[1]][2]})
+percentage <- round(pcaData$sdev / sum(pcaData$sdev) * 100, 2)
+percentage <- paste(colnames(df_out), "(", paste( as.character(percentage), "%", ")", sep="") )
+ggplot(df_out, aes(PC1, PC2, color=temperature, shape=accession)) +
+  geom_point(size=3) +
+  scale_color_manual(values=c('#0047BB', '#8BD52D')) +
+  scale_shape_manual(values=c(15, 19, 17, 18, 4, 8, 9, 11)) +
+  xlab(percentage[1]) +
+  ylab(percentage[2]) 
+
+```
+
+```{r PCA with the subsetted data for every accession}
+library(gridExtra)
+# PCA plot
+p <- list()
+pcaData<- list()
+for (acn in orderacns) {
+  subtable<- all.expr$data[grepl(acn, rownames(all.expr$data)),]
+  pcaData[[acn]]<- prcomp(subtable)
+  df_out<- as.data.frame(pcaData[[acn]]$x)
+  df_out$temperature <- sapply(rownames(df_out), function(x) {strsplit(x, split = '_')[[1]][1]})
+  df_out$replicate<- sapply(rownames(df_out), function(x) {name <-strsplit(x, split = '_')[[1]][3]
+                      rep<- samples$replicate[samples$sample == name]
+                      return(rep)})
+  print(acn)
+  percentage <- round(pcaData[[acn]]$sdev / sum(pcaData[[acn]]$sdev) * 100, 2)
+  percentage <- paste( colnames(df_out), "(", paste( as.character(percentage), "%", ")", sep="") )
+  p[[acn]]<-ggplot(df_out, aes(PC1, PC2, color=temperature, shape=replicate)) +
+  geom_point(size=3) +
+  scale_color_manual(values=c('#0047BB', '#8BD52D')) +
+  ggtitle(acn) +
+  xlab(percentage[1]) +
+  ylab(percentage[2]) + 
+  theme(aspect.ratio=1, legend.position = "none")
+}
+nCol <- 4
+do.call("grid.arrange", c(p, ncol=nCol))
+
+```
+
+COEXPRESSION NETWORK ANALYSIS
+```{r pick soft threshold}
+plotSoftThresholdChoices(all.expr$data, maxSoftThrs = 30, title = '6C and 16C')
+```
+
+```{r set softThreshold}
+all.expr$softThreshold <- 7
+```
+Based on scale-free topology we have chosen soft thresholds of 7.
+
+```{r adjacencies}
+all.expr$adjacency <- abs(bicor(all.expr$data, use = "p", maxPOutliers = 0.10))^all.expr$softThreshold 
+```
+## calculating topological overlap matrices
+Warning: This step is memory heavy.
+Sometimes R gives an error: vector memory exhausted (limit reached?)
+Memory allocated to R in Rstudio can be increased.
+Instructions:
+in console:
+touch .Renviron
+open .Renviron
+
+add to this file:
+R_MAX_VSIZE=20Gb
+
+20Gb was succesful on a 16Gb mac.
+Restart Rstudio
+
+```{r TOM}
+all.expr$TOM <- TOMsimilarity(all.expr$adjacency)
+# prevent too much memory usage by not saving the dissimilarity matrix but create it when needed with 1-TOM
+#expr.filter[[i]]$dissTOM <- 1 - expr.filter[[i]]$TOM
+```
+
+```{r dendrogram}
+collectGarbage()
+all.expr$geneTree <- hclust(as.dist(1- all.expr$TOM), method = "average")
+sizeGrWindow(12,9)
+plot(all.expr$geneTree, xlab="", sub="", main = "Gene clustering on TOM-based dissimilarity", labels = FALSE, hang = 0.04)
+```
+
+
+```{r get modules}
+minModuleSize <- 10
+all.expr$dynamicMods <- cutreeDynamic(dendro = all.expr$geneTree, distM = 1 - all.expr$TOM, deepSplit = 1, pamRespectsDendro = FALSE, minClusterSize = minModuleSize)
+table(all.expr$dynamicMods)
+```
+
+```{r size distribution unmerged}
+hist(table(all.expr$dynamicMods), main = 'Modules size before merging', breaks = 250, col= 'blue')
+```
+
+
+
+
+
+```{r plot modules}
+all.expr$dynamicColors <- labels2colors(all.expr$dynamicMods)
+sizeGrWindow(8,6)
+plotDendroAndColors(all.expr$geneTree, all.expr$dynamicColors, "Dynamic Tree Cut", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05, main = "Gene dendrogram and module colors")
+```
+
+# Merge modules that are similar
+
+Before, we plot the clustering of module eigengenes to decide the level where to merge
+
+```{r decide level to merge}
+###calculate eigengenes
+MEList <- moduleEigengenes(all.expr$data, colors=  all.expr$dynamicMods, softPower = all.expr$softThreshold)
+MEs <- MEList$eigengenes
+# Calculate dissimilarity of module eigengenes
+MEDiss = 1-cor(MEs)
+# Cluster module eigengenes
+METree = hclust(as.dist(MEDiss), method = "average")
+# Plot the result
+sizeGrWindow(7, 6)
+plot(METree, main = "Clustering of module eigengenes", xlab = "", sub = "", cex=0.3)
+
+  
+MEDissThres <- 0.20
+# Plot the cut line into the dendrogram
+abline(h=MEDissThres, col = "red")
+
+```
+
+Now we can merge 
+
+```{r merge similar clusters}
+#this step is different comparing to the tutorial for set-specific network construction and it's taken from the tutorial for consensus as it seems to work better (with the first one the moduleLabels it's not giving the same number of modules as the moduleColors, don't know why)
+
+merge <- mergeCloseModules(all.expr$data, all.expr$dynamicMods, cutHeight = MEDissThres, verbose = 3)
+# The merged module labels
+all.expr$mergedLabels <- merge$colors
+# translate into module colors
+all.expr$mergedColors <- labels2colors(all.expr$mergedLabels)
+# Eigengenes of the new merged modules
+all.expr$MEs <- merge$newMEs
+sizeGrWindow(12, 9)
+plotDendroAndColors(all.expr$geneTree, cbind(all.expr$dynamicColors, all.expr$mergedColors), c("Dynamic Tree Cut", "Merged dynamic"), dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05, main = 'Modules after merging')
+table(all.expr$mergedLabels)
+length(unique(all.expr$mergedLabels))  
+
+#save(all.expr, file='/groups/nordborg/user/sonia.celestini/WGCNA_newData/Network.RData')
+```
+
+
+```{r size distribution merged}
+hist(table(all.expr$mergedColors), main = 'Modules size after merging', breaks = 250, col = 'red')
+```
+
+## Check quality of modules based on connectivity
+```{r connectivity}
+
+# TeMP function
+#start with gene connectivity. The function sums adjacency entries (excluding the diagonal) to other nodes within the same module
+all.expr$geneConnectivity <- intramodularConnectivity(all.expr$adjacency, all.expr$mergedColors, scaleByMax = FALSE)
+# summarize per module
+modules <- unique(na.omit(all.expr$mergedLabels))
+all.expr$moduleConnectivity<- summarizeConnectivity(all.expr, modules=modules)
+print(all.expr$moduleConnectivity)
+```
+
+Module quality
+
+```{r module quality distribution}
+hist(all.expr$moduleConnectivity$Quality.module, main = 'Module quality')
+```
+
+Create a table for the relative connectivity (divide for the number of genes connected)
+
+```{r relative module connectivity}
+
+for (i in 1:nSets) {
+  modules <- unique(na.omit(expr.filter[[i]]$mergedColors))
+  expr.filter[[i]]$modulerelativeConnectivity<- RelativeConnectivity(expr = expr.filter[[i]], modules = modules)
+  expr.filter[[i]]$modulerelativeConnectivity<- expr.filter[[i]]$modulerelativeConnectivity[order(-expr.filter[[i]]$modulerelativeConnectivity$Quality.module),]
+  print(expr.filter[[i]]$modulerelativeConnectivity)
+}
+
+```
+Relative Module Quality and KDiff
+```{r relative module quality distribution}
+for (i in 1:nSets)
+{
+  hist(expr.filter[[i]]$modulerelativeConnectivity$Quality.module, breaks = 200, main = names(expr.filter[i]), col = 'green')
+  #hist(expr.filter[[i]]$modulerelativeConnectivity$KDiff, breaks = 150, main = names(expr.filter[i]))
+  abline(v = 70, col = 'red', lwd = 3)
+}
+```
+
+
+
+```{r Plot module composition in terms of category (G, T, GxT) and module eigengenes expression}
+#create table to categorize genes
+category.diffexpr<- data.frame('genes'= unique(genes.diff3$interaction$gene), 'category'= 'GxT')
+##genes with response G&T
+G.T<- genes.diff3$temperature$gene[genes.diff3$temperature$gene %in% genes.diff3$genotype$gene]
+category.diffexpr<- rbind(category.diffexpr, data.frame('genes'= G.T[!G.T %in% category.diffexpr$genes], 'category'= 'G&T'))
+#and the rest
+category.diffexpr<- rbind(category.diffexpr, data.frame('genes'= genes.diff3$temperature$gene[!genes.diff3$temperature$gene %in% category.diffexpr$genes], 'category'= 'T'))
+category.diffexpr<- rbind(category.diffexpr, data.frame('genes'= genes.diff3$genotype$gene[!genes.diff3$genotype$gene %in% category.diffexpr$genes], 'category'= 'G'))
+
+category.diffexpr <- category.diffexpr[category.diffexpr$genes %in% colnames(all.expr$data),]
+
+#Prepear data for the dendrogram module eigengenes
+all.expr$METree = hclust(as.dist(1-cor(all.expr$MEs)), method = "average")
+## change labels of the dendrogram and use them to give order to the plot
+order.modules<- all.expr$METree$labels
+order.modules<- sapply(order.modules, function(x) {paste(strsplit(x, split = 'E')[[1]][1], strsplit(x, split = 'E')[[1]][2], sep = '')})
+all.expr$METree$labels<- as.vector(order.modules)
+### correct for a little problem (the dendrogram move the position of some modules)
+order.modules.new<-c(as.vector(order.modules[1:34]), as.vector(order.modules[37:45]), as.vector(order.modules[35:36]))
+
+#Prepear data for stacked bar plot
+all.expr$genesinmodule<- lapply(unique(all.expr$mergedLabels), function(x) {colnames(all.expr$data)[all.expr$mergedLabels == x]})
+names(all.expr$genesinmodule)<- paste('M', unique(all.expr$mergedLabels), sep = '')
+category.plot<- data.frame(matrix(NA, nrow = length(unique(category.diffexpr$category)), ncol = length(all.expr$genesinmodule)))
+rownames(category.plot)<- unique(category.diffexpr$category)
+colnames(category.plot)<- names(all.expr$genesinmodule)
+
+for (col in 1:ncol(category.plot)) {
+  module<- colnames(category.plot)[col]
+  subtable<- category.diffexpr[category.diffexpr$genes %in% all.expr$genesinmodule[[module]],]
+  for (row in 1:nrow(category.plot)) {
+    category.plot[row, col]<- length(subtable$genes[subtable$category == rownames(category.plot)[row]])
+  }
+}
+category.plot<- category.plot[, match(as.vector(order.modules.new), colnames(category.plot))]
+category.plot<- as.matrix(category.plot)
+
+
+#Prepear data for category plot %
+category.100<- category.plot
+for (col in 1:ncol(category.plot)) {
+  for (row in 1:nrow(category.plot)) {
+    category.100[row, col]<- (category.plot[row, col]*100)/sum(category.plot[,col])
+  }
+}
+category.100<- category.100[,match(as.vector(order.modules.new), colnames(category.100))]
+category.100<- as.matrix(category.100)
+
+#Prepear data for plot behaviour module eigengene
+##average across replicates
+all.expr$aver.MEs<- data.frame(matrix(data = NA, nrow = 0, ncol = ncol(all.expr$MEs)))
+colnames(all.expr$aver.MEs)<- colnames(all.expr$MEs)
+orderacns<- c('6017', '6909', '8242', '9075', '9433', '9559', '9728', '9888')
+for (temperature in list(all.expr$MEs[1:24,], all.expr$MEs[25:48,])) {
+  for (i in 1:8) {
+    acn<-orderacns[i]
+    subtable<- temperature[grepl(acn, rownames(temperature)),]
+    all.expr$aver.MEs<- rbind(all.expr$aver.MEs, sapply(subtable, function(x) {mean(x)}))
+    rownames(all.expr$aver.MEs)[nrow(all.expr$aver.MEs)]<- paste(strsplit(rownames(subtable)[1], '_')[[1]][1], acn, sep = '_')
+  }
+}
+colnames(all.expr$aver.MEs)<- colnames(all.expr$MEs)
+names(all.expr$aver.MEs)<- as.character(sapply(names(all.expr$aver.MEs), function(x) {paste(strsplit(x, split = 'E')[[1]][1], strsplit(x, split = 'E')[[1]][2], sep = '')}))
+all.expr$aver.MEs<- all.expr$aver.MEs[,match(as.vector(order.modules.new), colnames(all.expr$aver.MEs))]
+colors <- rainbow(8)
+
+#cobine all the plots
+mat<- matrix(NA, nrow = 17, ncol = 6)
+mat[,1]<- 1
+mat[,2]<- 2
+mat[,3]<- 3
+mat[1,4:6]<- 0
+mat[17, 4:6]<- 0
+mat[2:16,4]<- seq(48, 6, -3)
+mat[2:16,5]<- seq(47, 5, -3)
+mat[2:16,6]<- seq(46, 4, -3)
+
+layout(mat = mat, widths = c(2,2,2,1,0.7,0.7))
+
+#plot 1: modules dendrogram 
+par(mar= c(2,0.7,2,3), cex.main = 1.4)
+plot(as.dendrogram(all.expr$METree), main = "Dendrogram of module eigengenes", xlab = "", sub = "", cex=0.3, horiz = T)
+
+#plot 2: category composition of modules in %
+par(mar= c(2,2.2,2,0.7), cex.main = 1.5)
+barplot(category.100, main = 'Category genes in modules %', col = c('#8BD52D', '#4891CE', '#2FBABF', '#0047BB'), horiz = T, cex.names = 0.3, axisnames = F)
+
+#plot 3: category composition of modules in absolute number
+par(mar= c(2,0.7,2,0.7), cex.main = 1.5)
+barplot(category.plot, main = 'Category genes in modules', col = c('#8BD52D', '#4891CE', '#2FBABF', '#0047BB'), horiz = T, cex.names = 0.3, axisnames = F)
+
+##plot 4: behaviour of module eigengene 
+for (i in as.character(order.modules.new)) {
+  subtable<- as.data.frame(all.expr$aver.MEs[,colnames(all.expr$aver.MEs) %in% i])
+  rownames(subtable)<- rownames(all.expr$aver.MEs)
+  par(xpd=TRUE, cex.axis = 0.5, pty = 's', mar= c(0, 2.3, 0, 2.3))
+  par(mar= c(0.3, 0.3 ,1 ,0.3), tck= NA, tcl=-0.2, cex.main = 0.7)
+  plot(NA, NA, xlim= range(1:nSets), ylim = range(all.expr$aver.MEs), xaxt = 'n', type='n', xlab= '', ylab= '', main = i)
+  #mtext(i, side = 4, adj = 1, cex = 0.7)
+  for (j in 1:8) {
+    acn<-orderacns[j]
+    lines(subtable[grepl(acn, rownames(subtable)),], type='l', lwd=2, col=colors[[j]])
+  }
+}
+```
+
+
+```{r if you want, plot only behaviour module eigengene}
+#preper data from chunk before in specific section
+#remove Module 0
+#all.expr$aver.MEs<- all.expr$aver.MEs[, !colnames(all.expr$aver.MEs) %in% 'ME0']
+##pass to visualization
+colors <- rainbow(8)
+sizeGrWindow(12, 10)
+pdf(file = '/groups/nordborg/user/sonia.celestini/WGCNA_newData/Expression_module_eigengene.pdf', width = 12, height = 10)
+par(xpd=TRUE, mfrow = c(5,9), cex.axis = 0.5, mar= c(0.5,0.5,0.5,0.5), pty = 's', oma = c(4, 4, 0, 0))
+for (i in colnames(all.expr$aver.MEs)[!colnames(all.expr$aver.MEs) %in% 'M0']) {
+  subtable<- as.data.frame(all.expr$aver.MEs[,colnames(all.expr$aver.MEs) == i])
+  rownames(subtable)<- rownames(all.expr$aver.MEs)
+  par(mar= c(1,1,1,1))
+  plot(NA, NA, xlim= range(1:nSets), ylim = range(all.expr$aver.MEs), xaxt = 'n', type='n', xlab= '', ylab= '')
+  title(i, line = 1)
+  axis(1, at=1:2, labels = c('6C', '16C'), cex.axis=0.7)
+  #add lines
+  for (j in 1:8) {
+    acn<- orderacns[j]
+    lines(subtable[grepl(acn, rownames(subtable)),], type='l', lwd=2, col=colors[[j]])
+  }
+}
+mtext('Temperature', side = 1, outer = T, line = 2)
+mtext('Expression level', side = 2, outer = T, line = 2)
+legend(x= -14.5, y= -1.5, as.vector(unique(orderiwant6C$accession)), fill =colors, cex=1, bty = 'n', ncol = 4, xpd = NA)
+dev.off()
+
+```
+ 
+
+```{r Go term enrichment for every module}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+    #install.packages("BiocManager")
+
+#iocManager::install("topGO")
+library(topGO)
+load('/groups/nordborg/pub/forPieter/WGCNA/Results/GeneUniverse&Annotation.RData')
+for (module in unique(all.expr$mergedLabels)) {
+  genesinmodule<- colnames(all.expr$data)[all.expr$mergedLabels == module]
+  Result<- Top.Go(genesinmodule, go_ids, genesuniverse, gene_2_GO)
+  #save the result
+  write.table(Result, file = paste('/groups/nordborg/pub/forPieter/WGCNA/WGCNA_8acn/GoEnrichment_modules/M', module, '.csv', sep=''), sep=",",quote=FALSE,row.names=FALSE)
+}
+```
+
+
+```{r Linear regression for each module to find main effect}
+library(tidyr)
+library(lme4)
+library(r2glmm)
+data<- all.expr$data
+mergedmodules<-all.expr$mergedLabels
+VC<- list()
+Model_fitting<- list()
+for (module in unique(mergedmodules)[!unique(mergedmodules) %in% 0]) {
+  #get table expression for that module
+  genesinmodule<- colnames(data)[mergedmodules == module]
+  expr_module<- data[, colnames(data) %in% genesinmodule]
+  #add columns
+  expr_module<- cbind('Temperature'= NA, 'Accession'=NA, 'Replicate'=NA, expr_module)
+  expr_module$Temperature <- sapply(rownames(expr_module), function(x) {strsplit(x, split = '_')[[1]][1]})
+  expr_module$Accession <- sapply(rownames(expr_module), function(x) {strsplit(x, split = '_')[[1]][2]})
+  #expr_module$Replicate <- sapply(rownames(expr_module), function(x) {strsplit(x, split = '_')[[1]][3]})
+  expr_module$Replicate <- sapply(rownames(expr_module), function(x) {rep<-strsplit(x, split = '_')[[1]][3]
+                                  rep<- samples$replicate[samples$sample %in% rep]
+                                  return(rep)})
+  expr_module$Replicate <- apply(expr_module, 1, function(x) {paste(x[1], '_', x[3], sep='')})
+  #create long-format input data
+  expr_module_long<- gather(expr_module, key = 'Gene', value = 'Expression', 4:ncol(expr_module))
+  expr_module_long$Temperature <- factor(expr_module_long$Temperature)
+  expr_module_long$Accession<- factor(expr_module_long$Accession)
+  expr_module_long$Replicate<- factor(expr_module_long$Replicate)
+  #linear regression
+  #VC[[paste0('M', module)]]<-fitLMM(Expression ~ (Temperature) + (Accession) + (Temperature:Accession) + (Replicate), expr_module_long, method='reml')
+  #Model_fitting[[paste0('M', module)]]<- lme(Expression ~ Accession + Temperature + Accession:Temperature, random = ~ 1|Replicate, data = expr_module_long)
+  fit<- lme(Expression ~ Accession + Temperature + Accession:Temperature, random = ~ 1|Replicate, data = expr_module_long) #nlme
+  fit <- lmer(Expression ~ Accession + Temperature + Accession:Temperature + (1|Replicate), data = expr_module_long) #lme4
+  #fit <- lm(Expression ~ Accession + Temperature + Accession:Temperature, data = expr_module_long)
+  #rsquare[[paste0('M', module)]] <- r2beta(fit, partial = TRUE, method = 'kr')
+  #anova(fit)
+  if (length(genesinmodule) > 600) {
+     #print(summary(aov(Model_fitting[[paste0('M', module)]])))
+    print(module)
+    print(summary(aov(fit)))
+  }
+  #VC[[paste0('M', module)]] <- anovaVCA(Expression~(Accession+Temperature)/Accession/Temperature, expr_module_long)
+  #print(fitS5, digits=4)
+}
+
+.rsquared.glmm <- function(varF, varRand, varResid = NULL, family, link,
+                           mdl.aic, mdl.class, null.fixef = NULL){
+   if(family == "gaussian"){
+      # Only works with identity link
+      if(link != "identity")
+         family_link.stop(family, link)
+      # Calculate marginal R-squared (fixed effects/total variance)
+      Rm <- varF/(varF+varRand+varResid)
+      # Calculate conditional R-squared (fixed effects+random effects/total variance)
+      Rc <- (varF+varRand)/(varF+varRand+varResid)
+   }
+   else if(family == "binomial"){
+      # Get the distribution-specific variance
+      if(link == "logit")
+         varDist <- (pi^2)/3
+      else if(link == "probit")
+         varDist <- 1
+      else
+         family_link.stop(family, link)
+      # Calculate marginal R-squared
+      Rm <- varF/(varF+varRand+varDist)
+      # Calculate conditional R-squared (fixed effects+random effects/total variance)
+      Rc <- (varF+varRand)/(varF+varRand+varDist)
+   }
+   else if(family == "poisson"){
+      # Get the distribution-specific variance
+      if(link == "log")
+         varDist <- log(1+1/exp(null.fixef))
+      else if(link == "sqrt")
+         varDist <- 0.25
+      else
+         family_link.stop(family, link)
+      # Calculate marginal R-squared
+      Rm <- varF/(varF+varRand+varDist)
+      # Calculate conditional R-squared (fixed effects+random effects/total variance)
+      Rc <- (varF+varRand)/(varF+varRand+varDist)
+   }
+   else
+      family_link.stop(family, link)
+   # Bind R^2s into a matrix and return with AIC values
+   data.frame(Class=mdl.class, Family = family, Link = link,
+              Marginal=Rm, Conditional=Rc, AIC=mdl.aic)
+}
+
+#' stop execution if unable to calculate variance for a given family and link
+#' @export
+family_link.stop <- function(family, link){
+   stop(paste("Don't know how to calculate variance for",
+              family, "family and", link, "link."))
+}
+r.squared.lme <- function(mdl){
+   # Get design matrix of fixed effects from model
+   Fmat <- model.matrix(eval(mdl$call$fixed)[-2], mdl$data)
+   # Get variance of fixed effects by multiplying coefficients by design matrix
+   VarF <- var(as.vector(nlme::fixef(mdl) %*% t(Fmat)))
+   # Get variance of random effects by extracting variance components
+   VarRand <- sum(suppressWarnings(as.numeric(nlme::VarCorr(mdl)
+                                              [rownames(nlme::VarCorr(mdl)) != "Residual",
+                                               1])), na.rm=T)
+   # Get residual variance
+   VarResid <- as.numeric(nlme::VarCorr(mdl)[rownames(nlme::VarCorr(mdl))=="Residual", 1])
+   # Call the internal function to do the pseudo r-squared calculations
+   .rsquared.glmm(VarF, VarRand, VarResid, family = "gaussian", link = "identity",
+                  mdl.aic = AIC(update(mdl, method="ML")),
+                  mdl.class = class(mdl))
+}
+
+```
+
+
+
+
+
+
