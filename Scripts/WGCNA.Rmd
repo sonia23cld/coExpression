@@ -16,7 +16,7 @@ library(DESeq2)
 #library(vsn)
 #library(limma)
 library(ggplot2)
-#source('Rfunctions.r')
+source('Rfunctions.r')
 knitr::opts_knit$set(root.dir = "/users/sonia.celestini/New_data/")
 options(stringsAsFactors = F)
 ```
@@ -669,6 +669,7 @@ for (module in unique(all.expr$mergedLabels)) {
 
 
 ```{r Linear regression for each module to find main effect}
+#this is to save our previous attempts. The clean and used script is the file module_GxE.Rmd
 library(tidyr)
 library(lme4)
 library(r2glmm)
@@ -711,77 +712,174 @@ for (module in unique(mergedmodules)[!unique(mergedmodules) %in% 0]) {
   #print(fitS5, digits=4)
 }
 
-.rsquared.glmm <- function(varF, varRand, varResid = NULL, family, link,
-                           mdl.aic, mdl.class, null.fixef = NULL){
-   if(family == "gaussian"){
-      # Only works with identity link
-      if(link != "identity")
-         family_link.stop(family, link)
-      # Calculate marginal R-squared (fixed effects/total variance)
-      Rm <- varF/(varF+varRand+varResid)
-      # Calculate conditional R-squared (fixed effects+random effects/total variance)
-      Rc <- (varF+varRand)/(varF+varRand+varResid)
-   }
-   else if(family == "binomial"){
-      # Get the distribution-specific variance
-      if(link == "logit")
-         varDist <- (pi^2)/3
-      else if(link == "probit")
-         varDist <- 1
-      else
-         family_link.stop(family, link)
-      # Calculate marginal R-squared
-      Rm <- varF/(varF+varRand+varDist)
-      # Calculate conditional R-squared (fixed effects+random effects/total variance)
-      Rc <- (varF+varRand)/(varF+varRand+varDist)
-   }
-   else if(family == "poisson"){
-      # Get the distribution-specific variance
-      if(link == "log")
-         varDist <- log(1+1/exp(null.fixef))
-      else if(link == "sqrt")
-         varDist <- 0.25
-      else
-         family_link.stop(family, link)
-      # Calculate marginal R-squared
-      Rm <- varF/(varF+varRand+varDist)
-      # Calculate conditional R-squared (fixed effects+random effects/total variance)
-      Rc <- (varF+varRand)/(varF+varRand+varDist)
-   }
-   else
-      family_link.stop(family, link)
-   # Bind R^2s into a matrix and return with AIC values
-   data.frame(Class=mdl.class, Family = family, Link = link,
-              Marginal=Rm, Conditional=Rc, AIC=mdl.aic)
+```
+
+```{r overview on GxT genes only}
+library(pheatmap)
+library(viridis)
+#create heatmap with clustering to have an overview on GxT behavior
+Gene_info<- read.table('/Users/sonia.celestini/Desktop/WGCNA_newData/Gene_category.txt', header = T)
+
+GxT_expression<- all.expr$data[colnames(all.expr$data) %in% Gene_info$genes[Gene_info$category %in% 'GxT']]
+#change labels with replicates (samples comes from the beginning)
+rownames(GxT_expression) <- sapply(rownames(GxT_expression), function(x) {name <-strsplit(x, split = '_')[[1]][3]
+                      rep<- samples$replicate[samples$sample == name]
+                      newname<- paste(strsplit(x, split = '_')[[1]][1], strsplit(x, split = '_')[[1]][2], rep, sep = '_')
+                      return(newname)})
+#heatmap
+pheatmap(GxT_expression, color = viridis(length(min(GxT_expression):max(GxT_expression))), show_rownames = F)
+
+#plot PCA
+pcaData<- prcomp(GxT_expression)
+df_out<- as.data.frame(pcaData$x)
+df_out$temperature <- sapply(rownames(df_out), function(x) {strsplit(x, split = '_')[[1]][1]})
+df_out$accession<- sapply(rownames(df_out), function(x) {strsplit(x, split = '_')[[1]][2]})
+percentage <- round(pcaData$sdev / sum(pcaData$sdev) * 100, 2)
+percentage <- paste(colnames(df_out), "(", paste( as.character(percentage), "%", ")", sep="") )
+ggplot(df_out, aes(PC5, PC6, color=temperature, shape=accession)) +
+  geom_point(size=3) +
+  scale_color_manual(values=c('#0047BB', '#8BD52D')) +
+  scale_shape_manual(values=c(15, 19, 17, 18, 4, 8, 9, 11)) +
+  xlab(percentage[5]) +
+  ylab(percentage[6]) 
+
+# Cumulative PVE plot
+## use percentage<- round(pcaData$sdev / sum(pcaData$sdev) * 100, 2)
+qplot(c(1:48), cumsum(percentage[1:48])) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("Cumulative variance %") + 
+  ggtitle("Cumulative Scree Plot") +
+  ylim(0,100)
+
+
+```
+
+
+```{r GxT genes centrality}
+#just look at their Ktot, plot it
+Category_genes<- read.table('/Users/sonia.celestini/Desktop/WGCNA_newData/Gene_category.txt', header = T)
+GxT_genes<- Category_genes$genes[Category_genes$category %in% 'GxT']
+all.expr$geneConnectivity$kTotal[rownames(all.expr$geneConnectivity) %in% GxT_genes,]
+hist(all.expr$geneConnectivity$kTotal[!rownames(all.expr$geneConnectivity) %in% GxT_genes], col=rgb(1,0,0,0.5), xlab = 'KTot', main = 'Genes connectivity', ylim = c(0,2000))
+hist(all.expr$geneConnectivity$kTotal[rownames(all.expr$geneConnectivity) %in% GxT_genes], col=rgb(0,0,1,0.5), add=T)
+```
+
+
+```{r perform Fisher exact test to find modules enriched in GxT genes}
+#prepear table
+fisher_GxTinmodules<- data.frame('Module'= unique(all.expr$mergedLabels),'N_tot_genes'= NA, 'N_GxT_genes'=NA)
+fisher_GxTinmodules$N_tot_genes<- lapply(fisher_GxTinmodules$Module, function(x) {length(all.expr$mergedLabels[all.expr$mergedLabels %in% x])})
+fisher_GxTinmodules$N_GxT_genes<- lapply(fisher_GxTinmodules$Module, function(x) {genesinmodule<- colnames(all.expr$data)[all.expr$mergedLabels %in% x]
+gxt<- genesinmodule[genesinmodule %in% GxT_genes]
+return(length(gxt))})
+fisher_GxTinmodules$N_tot_genes<- as.numeric(unlist(fisher_GxTinmodules$N_tot_genes))
+fisher_GxTinmodules$N_GxT_genes<- as.numeric(unlist(fisher_GxTinmodules$N_GxT_genes))
+fisher.test(as.matrix(fisher_GxTinmodules[,2:3]), simulate.p.value = T)
+#there is no random distribution of GxT genes in the modules, now I should find which modules have more GxT than expected
+fisher_GxTinmodules$Expected<- lapply(fisher_GxTinmodules$N_tot_genes, function(x) {(x*358)/15927})
+for (i in 1:nrow(fisher_GxTinmodules)) {
+  fisher_GxTinmodules$p_value[i] <- fisher.test(matrix(as.numeric(cbind(fisher_GxTinmodules[i, 2:3], 'Tot'= 15927, 'GxT'=358)), nrow = 2, ncol = 2))$p.value
 }
 
-#' stop execution if unable to calculate variance for a given family and link
-#' @export
-family_link.stop <- function(family, link){
-   stop(paste("Don't know how to calculate variance for",
-              family, "family and", link, "link."))
+#benjamini-hochberg correction on pvalues
+fisher_GxTinmodules$padj<- p.adjust(fisher_GxTinmodules$p_value, method = 'BH')
+fisher_GxTinmodules[fisher_GxTinmodules$padj < 0.05,]
+```
+
+```{r visualization GxT genes module 31}
+#heatmap
+genes_31<- colnames(all.expr$data)[all.expr$mergedLabels == 31]
+gxt_31<- genes_31[genes_31 %in% GxT_genes]
+gxt_31<- all.expr$data[, colnames(all.expr$data) %in% gxt_31]
+#change labels with replicates (samples comes from the beginning)
+rownames(gxt_31) <- sapply(rownames(gxt_31), function(x) {name <-strsplit(x, split = '_')[[1]][3]
+                      rep<- samples$replicate[samples$sample == name]
+                      newname<- paste(strsplit(x, split = '_')[[1]][1], strsplit(x, split = '_')[[1]][2], rep, sep = '_')
+                      return(newname)})
+pheatmap(t(gxt_31), color = viridis(length(min(gxt_31):max(gxt_31))), show_rownames = F)
+
+#summury plot
+#preper data from chunk before in specific section
+orderacns<- c('6017', '6909', '8242', '9075', '9433', '9559', '9728', '9888')
+colors <- palette.colors(8)
+sizeGrWindow(12, 12)
+#pdf(file = '/groups/nordborg/user/sonia.celestini/WGCNA_newData/Expression_module_eigengene.pdf', width = 12, height = 10)
+par(xpd=TRUE, mfrow = c(3,4), cex.axis = 0.5, mar= c(1,1,1,1), pty = 's', oma = c(6, 4, 1, 0))
+for (i in 1:ncol(gxt_31)) {
+  par(mar= c(2.5,0.5,2.5,0.5))
+  plot(NA, NA, xlim= range(1:6), ylim = range(gxt_31[,i]), xaxt = 'n', type='n', xlab= '', ylab= '')
+  title(colnames(gxt_31)[i], line = 1)
+  axis(1, at=1:6, labels = c('6C_rep1','6C_rep2', '6C_rep3', '16C_rep1', '16C_rep2', '16C_rep3'), cex.axis=0.7)
+  #add lines
+  for (j in 1:8) {
+    acn<- orderacns[j]
+    subtable<- gxt_31[grepl(acn, rownames(gxt_31)),]
+    formatching <- sapply(c('6C_rep1','6C_rep2', '6C_rep3', '16C_rep1', '16C_rep2', '16C_rep3'), function(x) {temp <-strsplit(x, split = '_')[[1]][1]
+    rep <-strsplit(x, split = '_')[[1]][2]
+                      newname<- paste(temp, acn, rep ,sep = '_')
+                      return(newname)})
+    subtable<- subtable[match(rownames(subtable), formatching),]
+    lines(subtable[,i], type='l', lwd=2, col=colors[[j]])
+  }
 }
-r.squared.lme <- function(mdl){
-   # Get design matrix of fixed effects from model
-   Fmat <- model.matrix(eval(mdl$call$fixed)[-2], mdl$data)
-   # Get variance of fixed effects by multiplying coefficients by design matrix
-   VarF <- var(as.vector(nlme::fixef(mdl) %*% t(Fmat)))
-   # Get variance of random effects by extracting variance components
-   VarRand <- sum(suppressWarnings(as.numeric(nlme::VarCorr(mdl)
-                                              [rownames(nlme::VarCorr(mdl)) != "Residual",
-                                               1])), na.rm=T)
-   # Get residual variance
-   VarResid <- as.numeric(nlme::VarCorr(mdl)[rownames(nlme::VarCorr(mdl))=="Residual", 1])
-   # Call the internal function to do the pseudo r-squared calculations
-   .rsquared.glmm(VarF, VarRand, VarResid, family = "gaussian", link = "identity",
-                  mdl.aic = AIC(update(mdl, method="ML")),
-                  mdl.class = class(mdl))
-}
+mtext('Temperature', side = 1, outer = T, line = 2)
+mtext('Expression level', side = 2, outer = T, line = 2)
+legend(x= -24.5, y= -2, orderacns, fill =colors, cex=0.8, bty = 'n', ncol = 8, xpd = NA)
+dev.off()
+
 
 ```
 
 
 
+```{r create table of gene description for modules of interest}
+modules_interest<- c(21, 31, 49, 52, 55)
+Gene_info<- read.table('/Users/sonia.celestini/Desktop/WGCNA_newData/Gene_category.txt', header = T)
+load('/Users/sonia.celestini/Desktop/WGCNA_newData/Network.RData')
+
+library(ape)
+Araport11 <- read.gff('/Users/sonia.celestini/Desktop/WGCNA_newData/Araport11_GFF3_genes_transposons.201606.gff') 
+
+# prepare Araport11 data
+colnames(Araport11) <- c('chr', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes')
+Araport11$attributes <- as.character(Araport11$attributes)
+
+Araport11_copy<- Araport11
+Araport11_copy[,9:10]<- str_split_fixed(Araport11_copy$attributes, ';', 2)
+Araport11_copy$attributes<- str_split_fixed(Araport11_copy$attributes, 'ID=', 2)[,2]
+colnames(Araport11_copy)[9]<- 'ID'
+colnames(Araport11_copy)[10]<- 'attributes'
+
+#Araport11<- Araport11[Araport11$feature %in% 'gene',]
+library(stringr)
+Araport11[,9:10]<- str_split_fixed(Araport11$attributes, ';', 2)
+Araport11$attributes<- str_split_fixed(Araport11$attributes, 'ID=', 2)[,2]
+colnames(Araport11)[9]<- 'ID'
+colnames(Araport11)[10]<- 'attributes'
+Araport11$attributes<- str_split_fixed(Araport11$attributes, 'Note=', 2)[,2]
+Araport11$attributes<- str_split_fixed(Araport11$attributes, ';', 2)[,1]
+
+#create tables
+#some attributes are empty, I will take them from the original table (Araport11_copy)
+empty<- which(Araport11$attributes == '')
+for (module in modules_interest) {
+  genesinmodule<- colnames(all.expr$data)[all.expr$mergedLabels == module]
+  table<- data.frame('Gene'=genesinmodule, 'GxT'=NA, 'Description'=NA)
+  for (i in 1:length(genesinmodule)) {
+    gene<- genesinmodule[i]
+    if (gene %in% Gene_info$genes[Gene_info$category %in% 'GxT']) {
+      gxt<- 'yes'
+    } else {gxt<- 'no'}
+    table$GxT[i]<- gxt
+    gene_raw<- which(Araport11$ID %in% gene)
+    if (gene_raw %in% empty) {
+      table$Description[i]<- Araport11_copy$attributes[Araport11_copy$ID %in% gene]
+    } else {
+      table$Description[i]<- Araport11$attributes[Araport11$ID %in% gene]}
+  }
+  write.table(table, file = paste('/Users/sonia.celestini/Desktop/WGCNA_newData/Modules_GeneDescription/M', module, '.txt', sep = ''), quote = F, sep = '\t', row.names = F)
+}
 
 
-
+```
