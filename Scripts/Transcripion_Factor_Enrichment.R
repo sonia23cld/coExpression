@@ -41,13 +41,8 @@ AraEnrice_v1 <- function(genes, OG, bg_genes = NULL, n_res = 25) {
   #############################################################################
   # Plot the results!
   sort_res <- sort(res, index.return = TRUE, decreasing = FALSE)
-  output <- data.frame(name = I(array("",dim=c(1,n_res))),
-                       log10_pval = I(array(NA,dim=c(1,n_res))),
-                       group_index = I(array(NA,dim=c(1,n_res))),
-                       groups_size = I(array(NA,dim=c(1,n_res))),
-                       sample_size = I(array(NA,dim=c(1,n_res))),
-                       intersect_size = I(array(NA,dim=c(1,n_res))),
-                       set = I(array(NA,dim=c(1,n_res))))
+  output <- data.frame(matrix(NA, nrow = n_res, ncol = 7)) 
+  colnames(output)<- c('name', 'log10_pval', 'group_index', 'groups_size', 'sample_size', 'intersect_size', 'set')    
   writeLines("using log10") 
   for(i in 1:n_res) {
     g_i <- sort_res$ix[i]
@@ -96,6 +91,7 @@ OG$groups <- OG$groups[,ind]
 
 #TF Enrichment
 Enrichment<- AraEnrice_v1(genes, OG, n_res = 50)
+write.table(Enrichment, file = '/Volumes/nordborg/pub/forPieter/WGCNA/WGCNA_8acn/TF_enrichment_module31.txt', sep = '\t', quote = F, row.names = F)
 
 #repeat only for GxT genes in module 31
 Gene_info<- read.table('/Volumes/nordborg/user/sonia.celestini/WGCNA_newData/Gene_category.txt', header = T)
@@ -108,4 +104,23 @@ for(i in 1:length(gxt_31)) {
 }
 
 Enrichment_gxt<- AraEnrice_v1(genes_gxt, OG, n_res = 50)
+write.table(Enrichment_gxt, file = '/Volumes/nordborg/pub/forPieter/WGCNA/WGCNA_8acn/TF_enrichment_module31_onlyGxTgenes.txt', sep = '\t', quote = F, row.names = F)
+
+
+#check which genes have a specific TF motif
+#check for CBF family
+check_Tf<-OG$groups[genes,Enrichment$group_index[c(1,7, 11, 12)]] #here you mean whether your genes are in group 23 ecc...? I.e. the syntax is OG$groups[genei, groupj]?
+#If they are present you will have a 1 
+
+CBF_genes<-which(apply(check_Tf, 1, function(x) {any(x %in% 1)}))
+CBF_genes<- genes[CBF_genes]
+CBF_genes<-  gene_infoV2$Name[CBF_genes]
+
+#check for DDF family
+check_Tf<-OG$groups[genes,Enrichment$group_index[c(3, 6)]] 
+DDF_genes<-which(apply(check_Tf, 1, function(x) {any(x %in% 1)}))
+DDF_genes<- genes[DDF_genes]
+DDF_genes<-  gene_infoV2$Name[DDF_genes]
+
+
 
